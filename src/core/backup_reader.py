@@ -14,6 +14,7 @@ from enum import IntEnum
 from pathlib import Path
 from typing import AsyncGenerator, Dict, Any, List, Optional, Union
 from src.core.backup_database import BackupDatabase, parse_snowflake
+from src.core.utils import load_media_exclude
 
 logger = logging.getLogger(__name__)
 
@@ -1045,6 +1046,7 @@ class BackupReader:
 
         # Cache for performance
         self._media_pool: Dict[str, Dict[str, Any]] = {}
+        self._media_exclude: set[str] = set()
 
         # Lazy loading flags
         self._roles_loaded = False
@@ -1069,6 +1071,7 @@ class BackupReader:
         """Initializes the backup path and the SQLite database."""
         bp = self.backup_path
         db_path = bp / "backup.db"
+        self._media_exclude = load_media_exclude(bp)
         
         if db_path.exists():
             self.db = BackupDatabase(db_path)
@@ -1377,6 +1380,11 @@ class BackupReader:
             backup_root=self.backup_path,
             media_pool=self._media_pool
         )
+        # Excluded files and links-mode attachments that were never downloaded have nothing to send
+        bm.attachments = [
+            a for a in bm.attachments
+            if a.local_hash and a.local_hash not in self._media_exclude and str(a.id) not in self._media_exclude
+        ]
         
         # Link thread if this is a starter message
         if bm.id in self._thread_map:
@@ -1485,6 +1493,10 @@ class BackupReader:
 
     async def download_attachment(self, attachment: BackupAttachment) -> bytes:
         return await attachment.read()
+
+    async def download_attachment_urls(self, urls: list[str]) -> Dict[str, bytes]:
+        # A backup has no Discord connection to re-sign links with
+        return {}
 
     # ── lifecycle ────────────────────────────────────────────────────────
 

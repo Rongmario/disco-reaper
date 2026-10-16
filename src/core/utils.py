@@ -16,6 +16,31 @@ def parse_snowflake(value: Any) -> Optional[int]:
 
 logger = logging.getLogger(__name__)
 
+DISCORD_EPOCH_MS = 1420070400000
+MEDIA_EXCLUDE_FILE = "media_exclude.txt"
+
+def snowflake_from_date(day) -> int:
+    """Smallest snowflake created on or after midnight UTC of `day`."""
+    from datetime import datetime, timezone
+    start = datetime(day.year, day.month, day.day, tzinfo=timezone.utc)
+    return (int(start.timestamp() * 1000) - DISCORD_EPOCH_MS) << 22
+
+def load_media_exclude(backup_path) -> set[str]:
+    """
+    Attachment IDs and SHA-256 hashes listed in the backup's exclude file, one per line.
+    A stored file path such as attachments/<hash>.png also works, only its stem is used.
+    """
+    from pathlib import Path
+    path = Path(backup_path) / MEDIA_EXCLUDE_FILE
+    if not path.exists():
+        return set()
+    entries = set()
+    for line in path.read_text(encoding="utf-8").splitlines():
+        entry = line.split("#", 1)[0].strip()
+        if entry:
+            entries.add(Path(entry).stem.lower())
+    return entries
+
 def resolve_discord_links(content: str, state, platform: str, target_server_id: str) -> str:
     """
     Finds Discord message/channel links and resolves them to the target platform 

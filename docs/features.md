@@ -84,3 +84,24 @@ You can create a local snapshot of your Discord server using the Backup Tool.
 * 🟩 **Deduplicated Attachments**: All the attachment media is stored in a content-addressable storage system.
 * 🟩 **Incremental Syncing**: Scans your existing local files and only downloads messages that have been sent since your last backup.
 * 🟩 **Supported Migrated**: Local backup can be used to later migrate your data without any dependance on discord API - even if that server was deleted.
+## Backup Filters
+Set under `backup_filters` in `reaper_config.yaml` (inside your `ReaperFiles-<name>` folder). Edit the file while the tool is closed. The backup confirm screen lists the active filters.
+
+```yaml
+backup_filters:
+  after_date: 2020-01-01        # skip everything before this day (UTC); threads with no newer messages are skipped too
+  exclude_users: [123456789012345678]
+  exclude_bots: true            # bots and webhooks
+  exclude_patterns:             # Python regex, tested against message content
+    - '(?i)^!roll\b'
+  media_mode: links             # download (default) or links
+```
+
+* 🟧 **Filters apply at backup time**: Filtered messages are never saved. Changing a filter only affects messages backed up afterwards, so start a fresh backup to apply it to older messages.
+* 🟧 **Replies**: A reply to a filtered message is kept, but loses its reply link.
+
+## Media Review
+* 🟩 **Media manifest**: Every backup run writes `media_manifest.csv` next to `backup.db`, one row per attachment with its message link, channel, author, local file and CDN link.
+* 🟩 **Exclude list**: Put attachment IDs or file hashes in `media_exclude.txt` next to `backup.db`, one per line (`#` starts a comment). A path like `attachments/<hash>.png` also works. Excluded files are not downloaded and not migrated.
+* 🟩 **Links mode**: With `media_mode: links`, attachments are recorded but not downloaded. Review them with the manifest, add the unwanted ones to `media_exclude.txt`, then set `media_mode: download` and run **Update Existing Backup** to download the rest. Discord CDN links expire after about a day, so the tool re-signs them before downloading.
+* 🟥 **Links mode needs Discord**: Attachments still recorded as links have no file, so they are left out of a migration from backup.

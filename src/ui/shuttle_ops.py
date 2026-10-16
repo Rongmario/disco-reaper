@@ -204,7 +204,7 @@ class OperationPane(Container):
             
         self.engine = MigrationContext(self.config, self.target_platform, source_mode=source, base_dir=self._base_dir())
         if self.view_mode == "backup":
-            self.exporter = DiscordExporter(self.engine.discord_reader, base_dir=self._base_dir())
+            self.exporter = DiscordExporter(self.engine.discord_reader, base_dir=self._base_dir(), filters=self.config.backup_filters)
 
     def _get_backup_info(self) -> str | None:
         if not self.config or not self.config.discord_server_id:
@@ -2327,6 +2327,7 @@ class OperationPane(Container):
             modal_confirm.set_status(f"Confirm to proceed with Backup of [bold]{len(selected_channels)}[/bold] channels")
             modal_confirm.show_info(f"[cyan]Backup Channels[/cyan]", f"{len(new_channels)} new, {len(existing_channels)} existing")
 
+            self._write_filter_summary(modal_confirm)
             choice = await modal_confirm.phase_wait_confirm(btn_start_label="Start Channel Backup", show_id=False)
             if choice != "btn_start_first":
                 modal_confirm.dismiss()
@@ -2348,6 +2349,36 @@ class OperationPane(Container):
             modal_prog.phase_report("Backup", "error", show_back=False)
         finally:
             await self.engine.close_connections()
+
+    async def _finish_media(self, modal: ProgressScreen) -> None:
+        """Downloads links-mode attachments once media_mode is back to download, then writes the review manifest."""
+        if self.config.backup_filters.media_mode == "download" and self.exporter.is_running:
+            modal.set_status("Downloading pending media...")
+            async def update_media(done, total):
+                modal.set_item_status(f"[cyan]Media: {done}/{total}[/cyan]")
+            stored = await self.exporter.download_pending_media(progress_callback=update_media)
+            if stored:
+                modal.write(f"[green]Downloaded {stored} pending attachments[/green]")
+        path = self.exporter.write_media_manifest()
+        modal.write(f"[dim]Media list for review: {path}[/dim]")
+
+    def _write_filter_summary(self, modal: ProgressScreen) -> None:
+        f = self.config.backup_filters
+        lines = []
+        if f.after_date:
+            lines.append(f"Messages before {f.after_date} skipped")
+        if f.exclude_users:
+            lines.append(f"{len(f.exclude_users)} users excluded")
+        if f.exclude_bots:
+            lines.append("Bot and webhook messages excluded")
+        if f.exclude_patterns:
+            lines.append(f"{len(f.exclude_patterns)} content patterns excluded")
+        if f.media_mode == "links":
+            lines.append("Attachments recorded as links only, not downloaded")
+        if lines:
+            modal.write("[bold yellow]Backup filters:[/bold yellow]")
+            for line in lines:
+                modal.write(f"  {line}")
 
     async def _logic_full_backup(self, modal: ProgressScreen, selected_channels: list, force_overwrite: bool, is_autotest: bool = False) -> None:
         """Non-interactive core backup logic."""
@@ -2389,6 +2420,7 @@ class OperationPane(Container):
                 )
                 modal.write(f"[green]Completed: #{chan.name}[/green]")
 
+            await self._finish_media(modal)
             modal.set_progress(total_chans, total_chans)
             modal.write("[bold green]Backup complete![/bold green]")
             modal.phase_report("Full Backup", show_back=False)
@@ -2489,6 +2521,7 @@ class OperationPane(Container):
                 modal_prog.write("\n[dim]This operation will update the profile and scan existing backed-up channels for new messages.[/dim]")
                 modal_prog.write("")
 
+            self._write_filter_summary(modal_prog)
             modal_prog.show_info("[bold green]Sync Ready[/bold green]", f"Overview: {len(server.channels) if server else '?'} Channels")
             modal_prog.set_status("Awaiting Confirmation to Sync Profile and Messages...")
 
@@ -2595,6 +2628,7 @@ class OperationPane(Container):
                 modal_prog.set_progress(total_chans, total_chans)
                 modal_prog.set_item_status("[bold green]Sync operation complete![/bold green]")
 
+            await self._finish_media(modal_prog)
             await self.exporter.export_metadata()
             modal_prog.write("[bold green]Sync operation complete![/bold green]")
             logger.info("Sync operation completed successfully.")

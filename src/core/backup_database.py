@@ -967,6 +967,37 @@ class BackupDatabase:
         
         return purged_count
 
+    def get_pending_attachments(self) -> List[Dict[str, Any]]:
+        """Attachments recorded in links mode that have no downloaded file yet."""
+        with self._lock:
+            rows = self._conn.execute("SELECT * FROM attachments WHERE local_hash IS NULL").fetchall()
+            return [dict(r) for r in rows]
+
+    def set_attachment_hash(self, attachment_id: Union[str, int], local_hash: str, size: int):
+        with self._lock:
+            self._conn.execute(
+                "UPDATE attachments SET local_hash = ?, size = ? WHERE id = ?",
+                (local_hash, size, parse_snowflake(attachment_id))
+            )
+            self._conn.commit()
+
+    def get_media_manifest(self) -> List[Dict[str, Any]]:
+        """One row per attachment with enough context to review it outside the tool."""
+        with self._lock:
+            rows = self._conn.execute("""
+                SELECT a.id AS attachment_id, m.id AS message_id, m.channel_id,
+                       COALESCE(c.name, t.name) AS channel, COALESCE(u.display_name, u.username) AS author,
+                       m.timestamp, a.filename, a.size, a.content_type, p.local_path AS local_file, a.url
+                FROM attachments a
+                JOIN messages m ON m.id = a.message_id
+                LEFT JOIN channels c ON c.id = m.channel_id
+                LEFT JOIN threads t ON t.id = m.channel_id
+                LEFT JOIN users u ON u.id = m.author_id
+                LEFT JOIN media_pool p ON p.hash = a.local_hash
+                ORDER BY m.id
+            """).fetchall()
+            return [dict(r) for r in rows]
+
     def get_backed_up_channel_ids(self) -> List[int]:
         """Returns a list of distinct channel IDs that have messages in the database."""
         with self._lock:

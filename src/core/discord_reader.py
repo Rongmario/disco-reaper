@@ -428,6 +428,30 @@ class DiscordReader:
         """Downloads a Discord attachment into memory."""
         return await attachment.read()
 
+    async def download_attachment_urls(self, urls: list[str]) -> Dict[str, bytes]:
+        """
+        Downloads attachments from stored CDN links, which expire about a day after they were fetched.
+        Each link is re-signed through Discord before download. Returns {original url: bytes}; links
+        Discord no longer recognises (deleted messages) are left out.
+        """
+        results: Dict[str, bytes] = {}
+        for start in range(0, len(urls), 50):  # Discord accepts up to 50 links per refresh call
+            chunk = urls[start:start + 50]
+            try:
+                resp = await self.client.http.request(
+                    discord.http.Route("POST", "/attachments/refresh-urls"),
+                    json={"attachment_urls": chunk},
+                )
+            except discord.HTTPException as e:
+                logger.error(f"Failed to refresh {len(chunk)} attachment links: {e}")
+                continue
+            for pair in resp.get("refreshed_urls", []):
+                try:
+                    results[pair["original"]] = await self.client.http.get_from_cdn(pair["refreshed"])
+                except discord.HTTPException as e:
+                    logger.error(f"Failed to download attachment {pair['original']}: {e}")
+        return results
+
     async def close(self):
         client = self.client
         self.client = None # Atomic clear

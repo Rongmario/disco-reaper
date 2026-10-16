@@ -3,18 +3,27 @@ import json
 import logging
 import asyncio
 import hashlib
+import re
+import csv
 import discord
 from pathlib import Path
 from typing import Dict, Any, List, Optional, AsyncGenerator
 from src.core.backup_database import BackupDatabase
+from src.core.configuration import BackupFilters
+from src.core.utils import snowflake_from_date, load_media_exclude
 
 logger = logging.getLogger(__name__)
 
 class DiscordExporter:
     """Core logic for exporting Discord server data."""
     
-    def __init__(self, reader, base_dir: Path | str = ""):
+    def __init__(self, reader, base_dir: Path | str = "", filters: BackupFilters | None = None):
         self.reader = reader
+        self.filters = filters or BackupFilters()
+        self.cutoff_id = snowflake_from_date(self.filters.after_date) if self.filters.after_date else None
+        self.exclude_users = set(self.filters.exclude_users)
+        self.exclude_patterns = [re.compile(p) for p in self.filters.exclude_patterns]
+        self.media_exclude: set[str] = set()
         self.server_name = ""
         self.server_id = ""
         self.user_cache = {}
@@ -50,6 +59,7 @@ class DiscordExporter:
         # Initialize SQLite database
         db_path = self.export_path / "backup.db"
         self.db = BackupDatabase(db_path)
+        self.media_exclude = load_media_exclude(self.export_path)
         
         logger.info(f"Export directory set to: {self.export_path}")
         logger.info(f"Initialized backup database at {db_path}")
@@ -350,6 +360,14 @@ class DiscordExporter:
         
         return data, ch_permissions, ch_forum_tags
 
+    def is_filtered(self, msg) -> bool:
+        if msg.author.id in self.exclude_users:
+            return True
+        if self.filters.exclude_bots and (msg.author.bot or msg.webhook_id):
+            return True
+        content = msg.content or ""
+        return any(p.search(content) for p in self.exclude_patterns)
+
     async def export_channel_messages(self, channel_id: int, progress_callback=None, force=False, accumulated_count=0, accumulated_threads=0, accumulated_files=0, after_id: int | None = None):
         """Fetches and saves message history for a channel to SQLite, handling incremental sync."""
         channel = await self.reader.get_channel(channel_id)
@@ -368,8 +386,11 @@ class DiscordExporter:
             if stored_last_id:
                 last_id = int(stored_last_id)
                 logger.info(f"Incremental sync for {channel_name}: starting after {last_id}")
+        if self.cutoff_id and (last_id is None or last_id < self.cutoff_id):
+            last_id = self.cutoff_id
 
         new_count = 0
+        filtered_count = 0
         BATCH_SIZE = 100
         USER_SAVE_INTERVAL = 500  # Save user cache every N new messages
         
@@ -379,8 +400,13 @@ class DiscordExporter:
 
         try:
             batch_raw = []
+            # ponytail: incremental sync resumes after the newest *stored* message, so messages
+            # filtered out after it are fetched (and dropped) again on each update.
             async for msg in self.reader.fetch_message_history(channel_id, after_id=last_id):
                 if not self.is_running: break
+                if self.is_filtered(msg):
+                    filtered_count += 1
+                    continue
                 batch_raw.append(msg)
 
                 if len(batch_raw) >= BATCH_SIZE:
@@ -448,6 +474,8 @@ class DiscordExporter:
             logger.error(f"403 Forbidden: Missing Access to read messages in {channel_name} ({channel_id})")
         except Exception as e:
             logger.error(f"Error fetching messages for {channel_name}: {e}")
+        if filtered_count:
+            logger.info(f"Filtered out {filtered_count} messages in {channel_name}")
 
         if not is_thread:
             accumulated_count, accumulated_threads, accumulated_files = await self.export_threads(channel_id, progress_callback=progress_callback, force=force, accumulated_count=accumulated_count, accumulated_threads=accumulated_threads, accumulated_files=accumulated_files)
@@ -685,6 +713,9 @@ class DiscordExporter:
 
     async def _process_media(self, media_id, url, filename, size=None, content_type=None, save_method=None, data=None):
         """Downloads and deduplicates any media (attachment or sticker) using SHA-256 (CAS)."""
+        if str(media_id) in self.media_exclude:
+            return None
+
         # 1. First check by URL in DB
         if self.db:
             existing = self.db.get_media_by_url(str(url))
@@ -697,6 +728,17 @@ class DiscordExporter:
                     "content_type": existing["content_type"],
                     "local_hash": existing["hash"]
                 }
+
+        # Links mode records the attachment without downloading it, see download_pending_media
+        if data is None and self.filters.media_mode == "links":
+            return {
+                "id": str(media_id),
+                "filename": filename,
+                "size": size,
+                "url": str(url),
+                "content_type": content_type,
+                "local_hash": None
+            }
 
         # 2. Temporary download to calculate hash
         import tempfile
@@ -722,7 +764,9 @@ class DiscordExporter:
                 # so we don't stall concurrent downloads on the event loop.
                 file_hash = await asyncio.to_thread(self._calculate_sha256, tmp_path)
                 actual_size = (await asyncio.to_thread(tmp_path.stat)).st_size
-                
+                if file_hash in self.media_exclude:
+                    return None
+
                 # Check if hash already exists in pool
                 if self.db:
                     in_pool = self.db.get_media_by_hash(file_hash)
@@ -768,6 +812,48 @@ class DiscordExporter:
                 except: pass
         return None
 
+    async def download_pending_media(self, progress_callback=None) -> int:
+        """Downloads attachments recorded in links mode, skipping the excluded ones. Returns the count stored."""
+        pending = [
+            a for a in self.db.get_pending_attachments()
+            if str(a["id"]) not in self.media_exclude
+        ]
+        stored = 0
+        for start in range(0, len(pending), 50):
+            if not self.is_running:
+                break
+            chunk = pending[start:start + 50]
+            downloaded = await self.reader.download_attachment_urls([a["url"] for a in chunk])
+            for att in chunk:
+                data = downloaded.get(att["url"])
+                if not data:
+                    continue
+                result = await self._process_media(
+                    media_id=att["id"], url=att["url"], filename=att["filename"],
+                    content_type=att["content_type"], data=data
+                )
+                if result:
+                    self.db.set_attachment_hash(att["id"], result["local_hash"], result["size"])
+                    stored += 1
+            if progress_callback:
+                await progress_callback(stored, len(pending))
+        return stored
+
+    def write_media_manifest(self) -> Path:
+        """Writes media_manifest.csv next to the backup so attachments can be reviewed before migration."""
+        path = self.export_path / "media_manifest.csv"
+        rows = self.db.get_media_manifest()
+        with open(path, "w", newline="", encoding="utf-8") as f:
+            writer = csv.writer(f)
+            writer.writerow(["attachment_id", "message_link", "channel", "author", "timestamp",
+                             "filename", "size", "content_type", "local_file", "cdn_url"])
+            for r in rows:
+                link = f"https://discord.com/channels/{self.server_id}/{r['channel_id']}/{r['message_id']}"
+                writer.writerow([r["attachment_id"], link, r["channel"], r["author"], r["timestamp"],
+                                 r["filename"], r["size"], r["content_type"], r["local_file"] or "", r["url"]])
+        logger.info(f"Wrote {len(rows)} attachments to {path}")
+        return path
+
     async def export_threads(self, channel_id: int, progress_callback=None, force=False, accumulated_count=0, accumulated_threads=0, accumulated_files=0, after_id: int | None = None):
         """Exports active and archived threads for a channel to SQLite."""
         channel = await self.reader.get_channel(channel_id)
@@ -792,6 +878,9 @@ class DiscordExporter:
                 logger.warning(f"Error fetching archived threads: {e}")
         except Exception as e:
             logger.error(f"Failed to fetch threads for {channel.name}: {e}")
+
+        if self.cutoff_id:
+            all_threads = [t for t in all_threads if (t.last_message_id or t.id) >= self.cutoff_id]
 
         is_forum = isinstance(channel, discord.ForumChannel)
         logger.debug(f"Exporting threads for channel '{channel.name}' ({channel.id}) [Type: {type(channel)}] [Is Forum: {is_forum}]")

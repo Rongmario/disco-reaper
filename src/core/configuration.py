@@ -1,7 +1,15 @@
-from typing import Optional, Union
+from datetime import date
+from typing import Literal, Optional, Union
 import yaml
 from pathlib import Path
 from pydantic import BaseModel, Field
+
+class BackupFilters(BaseModel):
+    after_date: Optional[date] = None           # skip messages before this day (UTC)
+    exclude_users: list[int] = Field(default_factory=list)
+    exclude_bots: bool = False                  # bots and webhooks
+    exclude_patterns: list[str] = Field(default_factory=list)  # regex, matched against message content
+    media_mode: Literal["download", "links"] = "download"
 
 class AppConfig(BaseModel):
     discord_bot_token: Optional[str] = Field(default=None)
@@ -15,6 +23,7 @@ class AppConfig(BaseModel):
     stoat_server_id: Optional[str] = Field(default=None)
     stoat_api_url: Optional[str] = Field(default=None)
     anonymize_users: bool = Field(default=False)
+    backup_filters: BackupFilters = Field(default_factory=BackupFilters)
     log_level: str = Field(default="INFO")
 
 def load_config(config_path: Union[str, Path] = "reaper_config.yaml", create_if_missing: bool = True) -> AppConfig:
