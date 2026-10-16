@@ -67,9 +67,9 @@ def _asset_context(state, roles=(), emojis=(), stickers=(), t_roles=(), t_emojis
     client = NS(
         get_guild_roles=AsyncMock(return_value=list(t_roles)),
         get_guild_emojis=AsyncMock(return_value=list(t_emojis)),
-        get_guild_stickers=AsyncMock(return_value=list(t_stickers)),
     )
-    return NS(discord_reader=reader, sync_reader=reader, fluxer_writer=NS(client=client), state=state,
+    writer = NS(client=client, get_stickers=AsyncMock(return_value=list(t_stickers)))
+    return NS(discord_reader=reader, sync_reader=reader, fluxer_writer=writer, state=state,
               config=NS(fluxer_server_id="999"))
 
 

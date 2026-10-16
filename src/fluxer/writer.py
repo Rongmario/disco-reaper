@@ -1,4 +1,5 @@
 import asyncio
+import base64
 import io
 import logging
 from typing import Optional, List, Dict, Any, Awaitable, Callable
@@ -334,6 +335,14 @@ class FluxerWriter:
 
     def _route(self, method: str, path: str, **params: Any) -> Route:
         return Route(method, path, base_url=self.client.api_url, **params)
+
+    # fluxer.py's sticker methods build their routes without the client's api_url, so on a
+    # self-hosted instance they call api.fluxer.app instead. Sticker calls go through _route here.
+    async def get_stickers(self, guild_id: Optional[str] = None) -> List[Dict[str, Any]]:
+        return await self._retry_on_rate_limit(
+            lambda: self.client.request(self._route("GET", "/guilds/{guild_id}/stickers", guild_id=guild_id or self.community_id)),
+            "list stickers"
+        )
 
     async def create_thread(self, channel_id: str, name: str, type: int = 11, auto_archive_duration: Optional[int] = None, slowmode_delay: Optional[int] = None, invitable: Optional[bool] = None) -> str:
         """
@@ -753,11 +762,11 @@ class FluxerWriter:
         assert self.client is not None
         
         try:
+            mime = "image/gif" if image_bytes[:4] == b"GIF8" else "image/jpeg" if image_bytes[:3] == b"\xff\xd8\xff" else "image/png"
+            payload = {"name": name, "image": f"data:{mime};base64,{base64.b64encode(image_bytes).decode('ascii')}"}
             sticker = await self._retry_on_rate_limit(
-                lambda: self.client.create_guild_sticker(
-                    guild_id=self.community_id,
-                    name=name,
-                    image=image_bytes
+                lambda: self.client.request(
+                    self._route("POST", "/guilds/{guild_id}/stickers", guild_id=self.community_id), json=payload
                 ),
                 f"create sticker {name}"
             )
@@ -1015,12 +1024,16 @@ class FluxerWriter:
 
         # Delete stickers
         try:
-            stickers = await self._retry_on_rate_limit(lambda: self.client.get_guild_stickers(self.community_id), "list stickers")
+            stickers = await self.get_stickers()
             sticker_total = len(stickers)
             for sticker in stickers:
                 try:
                     await self._retry_on_rate_limit(
-                        lambda: self.client.delete_guild_sticker(self.community_id, sticker["id"]), f"delete sticker {sticker['id']}"
+                        lambda: self.client.request(self._route(
+                            "DELETE", "/guilds/{guild_id}/stickers/{sticker_id}",
+                            guild_id=self.community_id, sticker_id=sticker["id"]
+                        )),
+                        f"delete sticker {sticker['id']}"
                     )
                     sticker_deleted += 1
                     if progress_callback:

@@ -1997,7 +1997,7 @@ class OperationPane(Container):
                     emojis = await writer.client.get_guild_emojis(community_id)
                     asset_names += [f"{e.get('name', '?')} (emoji)" for e in emojis]
                     try:
-                        stickers = await writer.client.get_guild_stickers(community_id)
+                        stickers = await writer.get_stickers(community_id)
                         asset_names += [f"{s.get('name', '?')} (sticker)" for s in stickers]
                     except Exception:
                         pass  # Stickers may not exist
@@ -2045,7 +2045,7 @@ class OperationPane(Container):
                     pass
 
                 try:
-                    target_stickers_raw = await writer.client.get_guild_stickers(tid)
+                    target_stickers_raw = await writer.get_stickers(tid)
                     target_stickers_map = {s.get("name", "").lower(): str(s.get("id")) for s in target_stickers_raw}
                 except Exception:
                     pass
