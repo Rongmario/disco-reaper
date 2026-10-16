@@ -2370,7 +2370,8 @@ class OperationPane(Container):
         if f.exclude_users:
             lines.append(f"{len(f.exclude_users)} users excluded")
         if f.exclude_bots:
-            lines.append("Bot and webhook messages excluded")
+            kept = f", except {len(f.allow_bots)} allowed" if f.allow_bots else ""
+            lines.append(f"Bot and webhook messages excluded{kept}")
         if f.exclude_patterns:
             lines.append(f"{len(f.exclude_patterns)} content patterns excluded")
         if f.media_mode == "links":

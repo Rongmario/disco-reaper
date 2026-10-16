@@ -8,6 +8,7 @@ class BackupFilters(BaseModel):
     after_date: Optional[date] = None           # skip messages before this day (UTC)
     exclude_users: list[int] = Field(default_factory=list)
     exclude_bots: bool = False                  # bots and webhooks
+    allow_bots: list[int] = Field(default_factory=list)  # bot or webhook IDs kept when exclude_bots is on
     exclude_patterns: list[str] = Field(default_factory=list)  # regex, matched against message content
     media_mode: Literal["download", "links"] = "download"
 

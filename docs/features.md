@@ -92,6 +92,7 @@ backup_filters:
   after_date: 2020-01-01        # skip everything before this day (UTC); threads with no newer messages are skipped too
   exclude_users: [123456789012345678]
   exclude_bots: true            # bots and webhooks
+  allow_bots: [432610292342587392]  # bot or webhook IDs kept anyway
   exclude_patterns:             # Python regex, tested against message content
     - '(?i)^!roll\b'
   media_mode: links             # download (default) or links

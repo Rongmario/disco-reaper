@@ -22,6 +22,7 @@ class DiscordExporter:
         self.filters = filters or BackupFilters()
         self.cutoff_id = snowflake_from_date(self.filters.after_date) if self.filters.after_date else None
         self.exclude_users = set(self.filters.exclude_users)
+        self.allow_bots = set(self.filters.allow_bots)
         self.exclude_patterns = [re.compile(p) for p in self.filters.exclude_patterns]
         self.media_exclude: set[str] = set()
         self.server_name = ""
@@ -363,7 +364,7 @@ class DiscordExporter:
     def is_filtered(self, msg) -> bool:
         if msg.author.id in self.exclude_users:
             return True
-        if self.filters.exclude_bots and (msg.author.bot or msg.webhook_id):
+        if self.filters.exclude_bots and (msg.author.bot or msg.webhook_id) and msg.author.id not in self.allow_bots:
             return True
         content = msg.content or ""
         return any(p.search(content) for p in self.exclude_patterns)

@@ -25,11 +25,12 @@ def test_snowflake_from_date():
 
 def test_is_filtered():
     exp = DiscordExporter(reader=None, filters=BackupFilters(
-        exclude_users=[42], exclude_bots=True, exclude_patterns=[r"(?i)^!roll\b"]
+        exclude_users=[42], exclude_bots=True, allow_bots=[99], exclude_patterns=[r"(?i)^!roll\b"]
     ))
     assert exp.is_filtered(_msg(author_id=42))
     assert exp.is_filtered(_msg(bot=True))
     assert exp.is_filtered(_msg(webhook_id=7))
+    assert not exp.is_filtered(_msg(author_id=99, bot=True))
     assert exp.is_filtered(_msg(content="!ROLL d20"))
     assert not exp.is_filtered(_msg(content="rolling along"))
 
